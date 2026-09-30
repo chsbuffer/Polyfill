@@ -76,53 +76,59 @@ For example:
   </Target>
   <!-- end-snippet -->
 
-  <!-- Feature detection runs after ResolveAssemblyReferences and before
-       CoreCompile. By that point @(ReferencePath) holds the final list of
-       assemblies that csc will see. WPF temporary projects copy those paths
-       without NuGetPackageId and NuGetPackageVersion metadata, so package
-       detection uses @(ResolvedCompileFileDefinitions), which retains that
-       metadata and excludes assets removed from compilation. Each Feature*
-       / Refs* DefineConstant is set for a resolved compile asset or an in-box
-       assembly in @(ReferencePath), so conditional source files compile
-       against the types made available to the project. -->
+  <ItemGroup>
+    <ResolveFeature Include="FeatureValueTuple" NuGetPackageId="System.ValueTuple" />
+    <ResolveFeature Include="RefsBclMemory" NuGetPackageId="Microsoft.Bcl.Memory" />
+    <ResolveFeature Include="FeatureMemory" NuGetPackageId="System.Memory" NuGetPackageVersion="4.5.5" />
+    <ResolveFeature Include="FeatureRuntimeInformation" NuGetPackageId="System.Runtime.InteropServices.RuntimeInformation" />
+    <ResolveFeature Include="FeatureValueTask" NuGetPackageId="System.Threading.Tasks.Extensions" />
+    <ResolveFeature Include="FeatureHttp" NuGetPackageId="System.Net.Http" ReferenceFilename="System.Net.Http" />
+    <ResolveFeature Include="FeatureCompression" NuGetPackageId="System.IO.Compression" ReferenceFilename="System.IO.Compression" />
+    <ResolveFeature Include="FeatureNumerics" ReferenceFilename="System.Numerics" />
+    <ResolveFeature Include="FeatureNumerics" ReferenceFilename="System.Runtime.Numerics" />
+    <ResolveFeature Include="FeatureAsyncInterfaces" NuGetPackageId="Microsoft.Bcl.AsyncInterfaces" />
+    <ResolveFeature Include="FeatureUnsafe" NuGetPackageId="System.Runtime.CompilerServices.Unsafe" />
+  </ItemGroup>
+
+  <!-- ReferencePath carries NuGet metadata in normal old-style projects;
+       ResolvedCompileFileDefinitions retains it in SDK WPF temporary projects.
+
+       Legacy WPF temporary projects lose package metadata on their copied
+       ReferencePath and skip NuGet contentFiles compilation. Falling back to
+       PackageReference or PackageVersion would enable features without the
+       corresponding Polyfill source files, so they are not supported. -->
+  <Target Name="_PolyfillCollectPackageAssets">
+    <ItemGroup>
+      <_PolyfillPackageAssets Include="@(ReferencePath);@(ResolvedCompileFileDefinitions)" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="_PolyfillResolveFeature"
+          DependsOnTargets="_PolyfillCollectPackageAssets"
+          Inputs="@(ResolveFeature)"
+          Outputs="%(ResolveFeature.Identity).%(ResolveFeature.ReferenceFilename).polyfill-feature">
+    <PropertyGroup>
+      <_PolyfillPackageId>%(ResolveFeature.NuGetPackageId)</_PolyfillPackageId>
+      <_PolyfillMinimumVersion>%(ResolveFeature.NuGetPackageVersion)</_PolyfillMinimumVersion>
+      <_PolyfillReferenceFilename>%(ResolveFeature.ReferenceFilename)</_PolyfillReferenceFilename>
+      <_PolyfillResolvedVersion Condition="'$(_PolyfillMinimumVersion)' != ''">@(_PolyfillPackageAssets->WithMetadataValue('NuGetPackageId', '$(_PolyfillPackageId)')->Metadata('NuGetPackageVersion')->Distinct())</_PolyfillResolvedVersion>
+    </PropertyGroup>
+    <ItemGroup>
+      <_PolyfillResolvedFeature Include="%(ResolveFeature.Identity)" Condition="'$(_PolyfillReferenceFilename)' != '' AND @(ReferencePath->AnyHaveMetadataValue('Filename', '$(_PolyfillReferenceFilename)'))" />
+      <_PolyfillResolvedFeature Include="%(ResolveFeature.Identity)" Condition="'$(_PolyfillPackageId)' != '' AND '$(_PolyfillMinimumVersion)' == '' AND @(_PolyfillPackageAssets->AnyHaveMetadataValue('NuGetPackageId', '$(_PolyfillPackageId)'))" />
+      <_PolyfillResolvedFeature Include="%(ResolveFeature.Identity)" Condition="'$(_PolyfillResolvedVersion)' != '' AND $([MSBuild]::VersionGreaterThanOrEquals($(_PolyfillResolvedVersion), $(_PolyfillMinimumVersion)))" />
+      <_PolyfillResolvedFeatureVersion Include="%(ResolveFeature.Identity)" Version="$(_PolyfillResolvedVersion)"
+                                       Condition="'$(_PolyfillMinimumVersion)' != '' AND '$(_PolyfillResolvedVersion)' != ''" />
+    </ItemGroup>
+  </Target>
+
   <Target Name="PolyfillResolveFeatures"
+          DependsOnTargets="_PolyfillResolveFeature"
           AfterTargets="ResolveAssemblyReferences"
           BeforeTargets="CoreCompile">
     <PropertyGroup>
-      <DefineConstants
-        Condition="@(ResolvedCompileFileDefinitions->AnyHaveMetadataValue('NuGetPackageId', 'System.ValueTuple'))">$(DefineConstants);FeatureValueTuple</DefineConstants>
-
-      <DefineConstants
-        Condition="@(ResolvedCompileFileDefinitions->AnyHaveMetadataValue('NuGetPackageId', 'Microsoft.Bcl.Memory'))">$(DefineConstants);RefsBclMemory</DefineConstants>
-
-      <MemoryVersion>@(ResolvedCompileFileDefinitions->WithMetadataValue('NuGetPackageId', 'System.Memory')->Metadata('NuGetPackageVersion'))</MemoryVersion>
-
-      <DefineConstants
-        Condition="'$(MemoryVersion)' != '' AND $([MSBuild]::VersionGreaterThanOrEquals($(MemoryVersion), '4.5.5'))">$(DefineConstants);FeatureMemory</DefineConstants>
-
-      <DefineConstants
-        Condition="@(ResolvedCompileFileDefinitions->AnyHaveMetadataValue('NuGetPackageId', 'System.Runtime.InteropServices.RuntimeInformation'))">$(DefineConstants);FeatureRuntimeInformation</DefineConstants>
-
-      <DefineConstants
-        Condition="@(ResolvedCompileFileDefinitions->AnyHaveMetadataValue('NuGetPackageId', 'System.Threading.Tasks.Extensions'))">$(DefineConstants);FeatureValueTask</DefineConstants>
-
-      <DefineConstants
-        Condition="@(ResolvedCompileFileDefinitions->AnyHaveMetadataValue('NuGetPackageId', 'System.Net.Http')) OR
-                   @(ReferencePath->AnyHaveMetadataValue('Filename', 'System.Net.Http'))">$(DefineConstants);FeatureHttp</DefineConstants>
-
-      <DefineConstants
-        Condition="@(ResolvedCompileFileDefinitions->AnyHaveMetadataValue('NuGetPackageId', 'System.IO.Compression')) OR
-                   @(ReferencePath->AnyHaveMetadataValue('Filename', 'System.IO.Compression'))">$(DefineConstants);FeatureCompression</DefineConstants>
-
-      <DefineConstants
-        Condition="@(ReferencePath->AnyHaveMetadataValue('Filename', 'System.Numerics')) OR
-                   @(ReferencePath->AnyHaveMetadataValue('Filename', 'System.Runtime.Numerics'))">$(DefineConstants);FeatureNumerics</DefineConstants>
-
-      <DefineConstants
-        Condition="@(ResolvedCompileFileDefinitions->AnyHaveMetadataValue('NuGetPackageId', 'Microsoft.Bcl.AsyncInterfaces'))">$(DefineConstants);FeatureAsyncInterfaces</DefineConstants>
-
-      <DefineConstants
-        Condition="@(ResolvedCompileFileDefinitions->AnyHaveMetadataValue('NuGetPackageId', 'System.Runtime.CompilerServices.Unsafe'))">$(DefineConstants);FeatureUnsafe</DefineConstants>
+      <DefineConstants Condition="'@(_PolyfillResolvedFeature)' != ''">$(DefineConstants);@(_PolyfillResolvedFeature->Distinct(), ';')</DefineConstants>
+      <MemoryVersion>@(_PolyfillResolvedFeatureVersion->WithMetadataValue('Identity', 'FeatureMemory')->Metadata('Version')->Distinct())</MemoryVersion>
 
       <DefineConstants Condition="$(LowerFramework.StartsWith('net11'))">$(DefineConstants);FeatureMemory;FeatureValueTuple;FeatureValueTask;FeatureRuntimeInformation;FeatureHttp;FeatureCompression;FeatureNumerics;FeatureAsyncInterfaces;FeatureUnsafe</DefineConstants>
       <DefineConstants Condition="$(LowerFramework.StartsWith('net10'))">$(DefineConstants);FeatureMemory;FeatureValueTuple;FeatureValueTask;FeatureRuntimeInformation;FeatureHttp;FeatureCompression;FeatureNumerics;FeatureAsyncInterfaces;FeatureUnsafe</DefineConstants>
